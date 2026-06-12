@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+      POSTGRES_DB: ledger
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://ledger:ledger@db:5432/ledger
+    env_file: ./backend/.env
+    ports: ["8077:8077"]
+    depends_on: [db]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8077
+
+  web:
+    build: ./frontend
+    environment:
+      API_URL: http://api:8077
+    ports: ["3000:3000"]
+    depends_on: [api]
+
+volumes:
+  pgdata:

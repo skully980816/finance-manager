@@ -1,0 +1,17 @@
+[build]
+builder = "dockerfile"
+
+[[services]]
+name = "api"
+source = "backend"
+
+[services.deploy]
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port 8077"
+healthcheckPath = "/api/health"
+
+[[services]]
+name = "web"
+source = "frontend"
+
+[services.deploy]
+startCommand = "node server.js"

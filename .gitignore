@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+*.db
+.env
+backend/.env
+*.env.local
+uploads/
+node_modules/
+.next/
+next-env.d.ts
+.DS_Store
+Thumbs.db
