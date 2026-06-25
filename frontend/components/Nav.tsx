@@ -26,7 +26,7 @@ export function Nav() {
   const { selected, setSelected } = useEntity();
 
   return (
-    <aside className="w-56 shrink-0 border-r border-border bg-panel p-4 flex flex-col h-screen sticky top-0">
+    <aside className="w-56 shrink-0 border-r border-border bg-panel p-4 flex flex-col">
       <div className="px-3 py-2 mb-3">
         <div className="text-lg font-semibold">Ledger</div>
         <div className="text-xs text-muted">Finance Manager</div>
@@ -47,7 +47,7 @@ export function Nav() {
         </select>
       </div>
 
-      <nav className="flex flex-col gap-1 flex-1 overflow-y-auto">
+      <nav className="flex flex-col gap-1 flex-1">
         {links.map(([href, label]) => (
           <Link key={href} href={href}
             className={`nav-link ${path === href ? "nav-link-active" : ""}`}>

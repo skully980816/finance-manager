@@ -1,11 +1,8 @@
-import csv
-import io
 from collections import defaultdict
 from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -47,55 +44,6 @@ def list_transactions(
     if end:
         q = q.filter(models.Transaction.date <= end)
     return q.order_by(models.Transaction.date.desc()).limit(limit).all()
-
-
-@router.get("/export.csv")
-def export_csv(
-    entity_id: int | None = None,
-    start: date | None = None,
-    end: date | None = None,
-    db: Session = Depends(get_db),
-):
-    q = db.query(models.Transaction)
-    if entity_id:
-        q = q.filter_by(entity_id=entity_id)
-    if start:
-        q = q.filter(models.Transaction.date >= start)
-    if end:
-        q = q.filter(models.Transaction.date <= end)
-    txns = q.order_by(models.Transaction.date.asc()).all()
-
-    entities = {e.id: e.name for e in db.query(models.Entity).all()}
-    categories = {c.id: c.name for c in db.query(models.Category).all()}
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "Date", "Entity", "Description", "Type", "Category",
-        "Amount (AUD)", "Direction", "Tax Deductible", "Income Type", "Source",
-    ])
-    for t in txns:
-        writer.writerow([
-            str(t.date),
-            entities.get(t.entity_id, ""),
-            t.description or "",
-            "Income" if t.direction == "in" else "Expense",
-            categories.get(t.category_id, "") if t.category_id else "",
-            f"{t.amount_cents / 100:.2f}",
-            t.direction,
-            "Yes" if t.is_deductible else "No",
-            t.income_type or "",
-            t.source or "",
-        ])
-
-    output.seek(0)
-    period = f"{start or 'all'}_{end or 'all'}"
-    filename = f"transactions_{period}.csv"
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
 
 
 @router.post("", response_model=schemas.TransactionOut)

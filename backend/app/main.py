@@ -57,8 +57,6 @@ def _lightweight_migrate():
         "deposit_cents": "INTEGER",
         "deposit_pct": "FLOAT",
         "reminder_freq": "VARCHAR",
-        "document_type": "VARCHAR DEFAULT 'invoice'",
-        "amount_paid_cents": "INTEGER DEFAULT 0",
     }
     with engine.begin() as conn:
         for col, ddl in entity_additions.items():

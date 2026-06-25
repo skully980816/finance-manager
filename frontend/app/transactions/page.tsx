@@ -115,48 +115,9 @@ export default function Transactions() {
     refresh();
   }
 
-  const today = new Date();
-  const fyStart = today.getMonth() >= 6
-    ? `${today.getFullYear()}-07-01`
-    : `${today.getFullYear() - 1}-07-01`;
-  const fyEnd = today.getMonth() >= 6
-    ? `${today.getFullYear() + 1}-06-30`
-    : `${today.getFullYear()}-06-30`;
-
-  function exportCSV(start: string, end: string, label: string) {
-    const entityParam = selected !== "all" ? `&entity_id=${selected}` : "";
-    const url = `/api/transactions/export.csv?start=${start}&end=${end}${entityParam}`;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `transactions_${label}.csv`;
-    a.click();
-  }
-
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold">Transactions</h1>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted">Export:</span>
-          <button className="btn-ghost text-sm" onClick={() => {
-            const m = today.getMonth() + 1;
-            const y = today.getFullYear();
-            const last = new Date(y, m, 0).getDate();
-            exportCSV(`${y}-${String(m).padStart(2,"0")}-01`, `${y}-${String(m).padStart(2,"0")}-${last}`, "this-month");
-          }}>This month</button>
-          <button className="btn-ghost text-sm" onClick={() => exportCSV(fyStart, fyEnd, "FY26")}>FY26</button>
-          <button className="btn-ghost text-sm" onClick={() => {
-            const prevStart = today.getMonth() >= 6
-              ? `${today.getFullYear() - 1}-07-01`
-              : `${today.getFullYear() - 2}-07-01`;
-            const prevEnd = today.getMonth() >= 6
-              ? `${today.getFullYear()}-06-30`
-              : `${today.getFullYear() - 1}-06-30`;
-            exportCSV(prevStart, prevEnd, "FY25");
-          }}>FY25</button>
-          <button className="btn-ghost text-sm" onClick={() => exportCSV("2000-01-01", fyEnd, "all-time")}>All time</button>
-        </div>
-      </div>
+      <h1 className="text-2xl font-semibold mb-6">Transactions</h1>
 
       <form onSubmit={add} className="card mb-6 grid md:grid-cols-7 gap-3 items-end">
         <Field label="Entity">
