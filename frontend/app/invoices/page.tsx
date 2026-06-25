@@ -1,278 +1,395 @@
 "use client";
-import { useState } from "react";
-import Link from "next/link";
+import React, { useState } from "react";
 import useSWR, { mutate } from "swr";
 import { fetcher, api, money } from "@/lib/api";
-import { BusinessProfile } from "@/components/BusinessProfile";
-import { useEntity, withEntity } from "@/lib/entity-context";
+import { useEntity } from "@/lib/entity-context";
 
-const STATUS: Record<string, string> = {
-  draft: "bg-panel2 text-muted", sent: "bg-accent/15 text-accent",
-  viewed: "bg-accent/15 text-accent", paid: "bg-good/15 text-good",
-  overdue: "bg-bad/15 text-bad",
+type InvoiceLine = { description: string; qty: number; unit_cents: number; gst_applicable: boolean };
+type Invoice = {
+  id: number; entity_id: number; client_id: number | null; number: string;
+  issue_date: string; due_date: string | null; status: string;
+  subtotal_cents: number; gst_cents: number; total_cents: number; amount_paid_cents: number;
+  document_type: string; notes: string | null; hosted_url: string | null; lines: InvoiceLine[];
+};
+type Client = { id: number; name: string; email: string | null };
+
+const STATUS_COLORS: Record<string, string> = {
+  draft: "bg-gray-100 text-gray-600",
+  sent: "bg-blue-100 text-blue-700",
+  viewed: "bg-purple-100 text-purple-700",
+  partial: "bg-yellow-100 text-yellow-700",
+  paid: "bg-green-100 text-green-700",
+  overdue: "bg-red-100 text-red-700",
 };
 
-const refreshInvoices = () =>
-  mutate((key) => typeof key === "string" &&
-    (key.startsWith("/api/invoices") || key.startsWith("/api/dashboard")));
+const emptyLine = (): InvoiceLine => ({ description: "", qty: 1, unit_cents: 0, gst_applicable: true });
 
-export default function Invoices() {
-  const { selected } = useEntity();
-  const { data: invoices } = useSWR(withEntity("/api/invoices", selected), fetcher);
-  const { data: entities } = useSWR("/api/entities", fetcher);
-  const { data: clients } = useSWR("/api/clients", fetcher);
+export default function InvoicesPage() {
+  const { entityId } = useEntity();
+  const [tab, setTab] = useState<"invoices" | "quotes">("invoices");
+  const [showForm, setShowForm] = useState(false);
+  const [formType, setFormType] = useState<"invoice" | "quote">("invoice");
+  const [payModal, setPayModal] = useState<Invoice | null>(null);
+  const [payAmount, setPayAmount] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  // Business to invoice FROM (personal entities can't issue invoices).
-  const businesses = (entities || []).filter((e: any) => e.kind === "business");
-  const [fromId, setFromId] = useState<string>("");
-  const from =
-    businesses.find((e: any) => String(e.id) === fromId) ||
-    businesses.find((e: any) => String(e.id) === String(selected)) ||
-    businesses[0];
+  const { data: invoices = [] } = useSWR<Invoice[]>(
+    entityId ? `/api/invoices?entity_id=${entityId}` : null, fetcher, { refreshInterval: 30_000 }
+  );
+  const { data: clients = [] } = useSWR<Client[]>(
+    entityId ? `/api/clients?entity_id=${entityId}` : null, fetcher
+  );
 
-  const [showProfile, setShowProfile] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [clientId, setClientId] = useState("");
-  const [lines, setLines] = useState([{ description: "", qty: 1, unit: "" }]);
+  const visible = invoices.filter((i) =>
+    tab === "quotes" ? i.document_type === "quote" : i.document_type !== "quote"
+  );
 
-  // Inline "add new client" form
-  const [showClientForm, setShowClientForm] = useState(false);
-  const [savingClient, setSavingClient] = useState(false);
-  const [clientErr, setClientErr] = useState("");
-  const emptyClient = { name: "", email: "", phone: "", address: "" };
-  const [newClient, setNewClient] = useState(emptyClient);
+  // ---- Form state ----
+  const [form, setForm] = useState({
+    client_id: "" as string | number,
+    issue_date: new Date().toISOString().slice(0, 10),
+    due_date: "",
+    notes: "",
+    lines: [emptyLine()],
+  });
 
-  async function createClient() {
-    if (!newClient.name.trim() || !from) return;
-    setClientErr(""); setSavingClient(true);
-    try {
-      const c = await api("/api/clients", {
-        method: "POST",
-        body: JSON.stringify({ entity_id: Number(from.id), ...newClient }),
-      });
-      await mutate("/api/clients");
-      setClientId(String(c.id));        // auto-select the new client
-      setNewClient(emptyClient);
-      setShowClientForm(false);
-    } catch (e: any) { setClientErr(String(e.message || e)); }
-    finally { setSavingClient(false); }
+  function openNew(type: "invoice" | "quote") {
+    setFormType(type);
+    setForm({
+      client_id: "",
+      issue_date: new Date().toISOString().slice(0, 10),
+      due_date: "",
+      notes: "",
+      lines: [emptyLine()],
+    });
+    setShowForm(true);
+    setError("");
   }
 
-  const subtotal = lines.reduce((s, l) => s + (parseFloat(l.unit || "0") * Number(l.qty || 0)), 0);
-  const gst = from?.gst_registered ? subtotal * 0.1 : 0;
+  function setLine(i: number, field: keyof InvoiceLine, value: string | number | boolean) {
+    setForm((f) => {
+      const lines = [...f.lines];
+      lines[i] = { ...lines[i], [field]: value };
+      return { ...f, lines };
+    });
+  }
+
+  function addLine() {
+    setForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }));
+  }
+
+  function removeLine(i: number) {
+    setForm((f) => ({ ...f, lines: f.lines.filter((_, idx) => idx !== i) }));
+  }
+
+  const subtotal = form.lines.reduce((s, l) => s + Math.round(l.qty * l.unit_cents), 0);
+  const gst = form.lines.reduce((s, l) => s + (l.gst_applicable ? Math.round(l.qty * l.unit_cents * 0.1) : 0), 0);
   const total = subtotal + gst;
 
-  // Deposit + reminders
-  const [depositType, setDepositType] = useState<"none" | "percent" | "amount">("none");
-  const [depositValue, setDepositValue] = useState("");
-  const [reminderFreq, setReminderFreq] = useState("none");
-
-  const depositDue =
-    depositType === "percent" ? (total * (parseFloat(depositValue || "0") / 100)) :
-    depositType === "amount" ? Math.min(parseFloat(depositValue || "0"), total) : 0;
-
-  async function create() {
-    await api("/api/invoices", {
-      method: "POST",
-      body: JSON.stringify({
-        entity_id: Number(from.id),
-        client_id: clientId ? Number(clientId) : null,
-        deposit_pct: depositType === "percent" && depositValue ? Number(depositValue) : null,
-        deposit_cents: depositType === "amount" && depositValue
-          ? Math.round(parseFloat(depositValue) * 100) : null,
-        reminder_freq: reminderFreq !== "none" ? reminderFreq : null,
-        lines: lines.filter((l) => l.description).map((l) => ({
-          description: l.description, qty: Number(l.qty),
-          unit_cents: Math.round(parseFloat(l.unit || "0") * 100),
-          gst_applicable: true,
-        })),
-      }),
-    });
-    setShowCreate(false);
-    setLines([{ description: "", qty: 1, unit: "" }]);
-    setDepositType("none"); setDepositValue(""); setReminderFreq("none");
-    refreshInvoices();
+  async function submit() {
+    setSaving(true); setError("");
+    try {
+      await api("/api/invoices", {
+        method: "POST",
+        body: JSON.stringify({
+          entity_id: entityId,
+          client_id: form.client_id || null,
+          issue_date: form.issue_date || null,
+          due_date: form.due_date || null,
+          notes: form.notes || null,
+          document_type: formType,
+          lines: form.lines.map((l) => ({
+            ...l,
+            unit_cents: Math.round(Number(l.unit_cents)),
+            qty: Number(l.qty),
+          })),
+        }),
+      });
+      mutate(`/api/invoices?entity_id=${entityId}`);
+      setShowForm(false);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Error");
+    } finally { setSaving(false); }
   }
 
-  async function send(id: number) { await api(`/api/invoices/${id}/send`, { method: "POST" }); refreshInvoices(); }
-  async function markPaid(id: number) { await api(`/api/invoices/${id}/mark-paid`, { method: "POST" }); refreshInvoices(); }
+  async function convertToInvoice(inv: Invoice) {
+    await api(`/api/invoices/${inv.id}/convert-to-invoice`, { method: "POST" });
+    mutate(`/api/invoices?entity_id=${entityId}`);
+    setTab("invoices");
+  }
 
-  const profileReady = from?.abn && from?.bank_account_number;
+  async function markPaid(inv: Invoice) {
+    await api(`/api/invoices/${inv.id}/mark-paid`, { method: "POST" });
+    mutate(`/api/invoices?entity_id=${entityId}`);
+  }
+
+  async function recordPayment() {
+    if (!payModal) return;
+    const cents = Math.round(parseFloat(payAmount) * 100);
+    if (!cents || cents <= 0) return;
+    await api(`/api/invoices/${payModal.id}/payment`, {
+      method: "POST",
+      body: JSON.stringify({ amount_cents: cents }),
+    });
+    mutate(`/api/invoices?entity_id=${entityId}`);
+    setPayModal(null); setPayAmount("");
+  }
+
+  async function deleteDoc(inv: Invoice) {
+    if (!confirm(`Delete ${inv.document_type} ${inv.number}?`)) return;
+    await api(`/api/invoices/${inv.id}`, { method: "DELETE" });
+    mutate(`/api/invoices?entity_id=${entityId}`);
+  }
+
+  function openPrint(inv: Invoice) {
+    window.open(`/api/invoices/${inv.id}/print`, "_blank");
+  }
+
+  const clientName = (id: number | null) => clients.find((c) => c.id === id)?.name ?? "—";
+  const balance = (inv: Invoice) => inv.total_cents - (inv.amount_paid_cents || 0);
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-2">
-        <div>
-          <h1 className="text-2xl font-semibold">Invoices</h1>
-          <div className="text-sm text-muted">
-            {selected === "all"
-              ? "Showing all income"
-              : `Showing ${entities?.find((e: any) => e.id === selected)?.name ?? ""}`}
-          </div>
+    <div className="p-6 max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Invoicing</h1>
+        <div className="flex gap-2">
+          <button onClick={() => openNew("quote")}
+            className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
+            + New Quote
+          </button>
+          <button onClick={() => openNew("invoice")}
+            className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800">
+            + New Invoice
+          </button>
         </div>
-        <button className="btn" onClick={() => { setShowCreate(!showCreate); setShowProfile(false); }}>
-          + New invoice
-        </button>
       </div>
 
-      {showCreate && (
-        <div className="card mb-6">
-          <div className="grid md:grid-cols-2 gap-3 mb-4">
-            <div>
-              <div className="stat-label mb-1">Invoice from</div>
-              <select className="input" value={String(from?.id ?? "")}
-                onChange={(e) => setFromId(e.target.value)}>
-                {businesses.map((e: any) => (
-                  <option key={e.id} value={e.id}>{e.name}{e.gst_registered ? " · GST" : ""}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <div className="stat-label">Bill to (client)</div>
-                <button type="button" className="text-xs text-accent hover:underline"
-                  onClick={() => { setShowClientForm(!showClientForm); setClientErr(""); }}>
-                  {showClientForm ? "Cancel" : "+ New client"}
-                </button>
-              </div>
-              <select className="input" value={clientId} onChange={(e) => setClientId(e.target.value)}>
-                <option value="">No client / ad-hoc</option>
-                {clients?.filter((c: any) => c.entity_id === from?.id).map((c: any) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {showClientForm && (
-            <div className="card bg-panel2/40 mb-4">
-              <div className="stat-label mb-2">New client {from ? `for ${from.name}` : ""}</div>
-              <div className="grid md:grid-cols-2 gap-2">
-                <input className="input" placeholder="Name *" value={newClient.name}
-                  onChange={(e) => setNewClient({ ...newClient, name: e.target.value })} />
-                <input className="input" placeholder="Email" value={newClient.email}
-                  onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} />
-                <input className="input" placeholder="Phone" value={newClient.phone}
-                  onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} />
-                <input className="input" placeholder="Address" value={newClient.address}
-                  onChange={(e) => setNewClient({ ...newClient, address: e.target.value })} />
-              </div>
-              {clientErr && <div className="text-bad text-xs mt-2">{clientErr}</div>}
-              <div className="flex justify-end gap-2 mt-3">
-                <button className="btn" onClick={createClient} disabled={savingClient || !newClient.name.trim()}>
-                  {savingClient ? "Saving…" : "Save client"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {!profileReady && (
-            <button onClick={() => setShowProfile(!showProfile)}
-              className="w-full text-left mb-4 text-sm text-warn hover:underline">
-              ⚠ {from?.name} has no ABN/bank details yet — click to add (one-time, auto-fills invoices)
-            </button>
-          )}
-          {showProfile && from && <div className="mb-4"><BusinessProfile entity={from} /></div>}
-
-          <div className="stat-label mb-2">Line items</div>
-          <div className="grid grid-cols-12 gap-2 mb-1 text-xs text-muted px-1">
-            <div className="col-span-7">Description</div><div className="col-span-2">Qty</div><div className="col-span-2">Unit $</div>
-          </div>
-          {lines.map((l, i) => (
-            <div key={i} className="grid grid-cols-12 gap-2 mb-2 items-center">
-              <input className="input col-span-7" placeholder="e.g. Consulting — 10 hrs" value={l.description}
-                onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, description: e.target.value } : x))} />
-              <input className="input col-span-2" value={l.qty}
-                onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, qty: e.target.value as any } : x))} />
-              <input className="input col-span-2" placeholder="0.00" value={l.unit}
-                onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, unit: e.target.value } : x))} />
-              {lines.length > 1 && (
-                <button className="col-span-1 text-muted hover:text-bad text-sm"
-                  onClick={() => setLines(lines.filter((_, j) => j !== i))}>✕</button>
-              )}
-            </div>
-          ))}
-          <button className="btn-ghost mt-1" onClick={() => setLines([...lines, { description: "", qty: 1, unit: "" }])}>
-            + Add line
+      {/* Tabs */}
+      <div className="flex gap-1 mb-6 border-b border-gray-200">
+        {(["invoices", "quotes"] as const).map((t) => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              tab === t ? "border-gray-900 text-gray-900" : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}>
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+            <span className="ml-1.5 text-xs bg-gray-100 rounded-full px-1.5 py-0.5">
+              {invoices.filter((i) => (t === "quotes" ? i.document_type === "quote" : i.document_type !== "quote")).length}
+            </span>
           </button>
+        ))}
+      </div>
 
-          {/* Deposit + reminders */}
-          <div className="grid md:grid-cols-2 gap-3 mt-5 pt-4 border-t border-border">
-            <div>
-              <div className="stat-label mb-1">Deposit required</div>
-              <div className="flex gap-2">
-                <select className="input w-32" value={depositType}
-                  onChange={(e) => { setDepositType(e.target.value as any); setDepositValue(""); }}>
-                  <option value="none">None</option>
-                  <option value="percent">% of total</option>
-                  <option value="amount">Fixed $</option>
+      {/* Table */}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        {visible.length === 0 ? (
+          <div className="py-16 text-center text-gray-400">
+            No {tab} yet.{" "}
+            <button className="text-gray-900 underline" onClick={() => openNew(tab === "quotes" ? "quote" : "invoice")}>
+              Create one
+            </button>
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Number</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Client</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Date</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Due</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600">Total</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600">Balance</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
+                <th className="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {visible.map((inv) => (
+                <tr key={inv.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-mono text-xs">{inv.number}</td>
+                  <td className="px-4 py-3">{clientName(inv.client_id)}</td>
+                  <td className="px-4 py-3 text-gray-500">{inv.issue_date}</td>
+                  <td className="px-4 py-3 text-gray-500">{inv.due_date ?? "—"}</td>
+                  <td className="px-4 py-3 text-right font-medium">{money(inv.total_cents)}</td>
+                  <td className={`px-4 py-3 text-right font-medium ${balance(inv) > 0 && inv.status === "overdue" ? "text-red-600" : ""}`}>
+                    {money(balance(inv))}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[inv.status] ?? "bg-gray-100 text-gray-600"}`}>
+                      {inv.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-2 justify-end">
+                      {inv.document_type === "quote" && inv.status !== "paid" && (
+                        <button onClick={() => convertToInvoice(inv)}
+                          className="text-xs text-blue-600 hover:underline">Convert</button>
+                      )}
+                      {inv.document_type !== "quote" && inv.status !== "paid" && (
+                        <>
+                          <button onClick={() => { setPayModal(inv); setPayAmount(""); }}
+                            className="text-xs text-green-600 hover:underline">Pay</button>
+                          <button onClick={() => markPaid(inv)}
+                            className="text-xs text-gray-500 hover:underline">Full paid</button>
+                        </>
+                      )}
+                      <button onClick={() => openPrint(inv)}
+                        className="text-xs text-gray-500 hover:underline">PDF</button>
+                      {(inv.status === "draft" || inv.document_type === "quote") && (
+                        <button onClick={() => deleteDoc(inv)}
+                          className="text-xs text-red-500 hover:underline">Delete</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Create form modal */}
+      {showForm && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-start justify-center overflow-y-auto py-8">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-lg font-semibold">New {formType === "quote" ? "Quote" : "Invoice"}</h2>
+              <button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Client</label>
+                <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                  value={form.client_id} onChange={(e) => setForm((f) => ({ ...f, client_id: e.target.value }))}>
+                  <option value="">— No client —</option>
+                  {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
-                {depositType !== "none" && (
-                  <input className="input flex-1" placeholder={depositType === "percent" ? "e.g. 50" : "0.00"}
-                    value={depositValue} onChange={(e) => setDepositValue(e.target.value)} />
-                )}
               </div>
-              {depositType !== "none" && depositValue && (
-                <div className="text-xs text-muted mt-1">Deposit due: {money(Math.round(depositDue * 100))}</div>
-              )}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Issue Date</label>
+                <input type="date" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                  value={form.issue_date} onChange={(e) => setForm((f) => ({ ...f, issue_date: e.target.value }))} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Due Date</label>
+                <input type="date" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                  value={form.due_date} onChange={(e) => setForm((f) => ({ ...f, due_date: e.target.value }))} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
+                <input type="text" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                  placeholder="e.g. Payment via EFT"
+                  value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
+              </div>
             </div>
-            <div>
-              <div className="stat-label mb-1">Payment reminders</div>
-              <select className="input" value={reminderFreq} onChange={(e) => setReminderFreq(e.target.value)}>
-                <option value="none">No reminders</option>
-                <option value="weekly">Weekly</option>
-                <option value="fortnightly">Fortnightly</option>
-                <option value="monthly">Monthly</option>
-              </select>
-            </div>
-          </div>
 
-          <div className="flex justify-between items-end mt-5 pt-4 border-t border-border">
-            <div className="text-sm text-muted">{from?.gst_registered ? "Includes 10% GST" : "No GST (not registered)"}</div>
-            <div className="text-right">
-              <div className="text-sm text-muted">Subtotal {money(subtotal * 100)}{from?.gst_registered && ` · GST ${money(gst * 100)}`}</div>
-              <div className="text-xl font-semibold">Total {money((subtotal + gst) * 100)}</div>
+            {/* Line items */}
+            <div className="border border-gray-200 rounded-lg overflow-hidden mb-4">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium text-gray-600">Description</th>
+                    <th className="text-center px-3 py-2 font-medium text-gray-600 w-16">Qty</th>
+                    <th className="text-right px-3 py-2 font-medium text-gray-600 w-28">Unit ($)</th>
+                    <th className="text-center px-3 py-2 font-medium text-gray-600 w-16">GST</th>
+                    <th className="text-right px-3 py-2 font-medium text-gray-600 w-24">Total</th>
+                    <th className="w-8"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {form.lines.map((line, i) => (
+                    <tr key={i}>
+                      <td className="px-2 py-1.5">
+                        <input type="text" className="w-full border-0 focus:outline-none text-sm"
+                          placeholder="Description" value={line.description}
+                          onChange={(e) => setLine(i, "description", e.target.value)} />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input type="number" min="0" step="0.01"
+                          className="w-full border-0 focus:outline-none text-sm text-center"
+                          value={line.qty} onChange={(e) => setLine(i, "qty", parseFloat(e.target.value) || 0)} />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input type="number" min="0" step="0.01"
+                          className="w-full border-0 focus:outline-none text-sm text-right"
+                          value={(line.unit_cents / 100).toFixed(2)}
+                          onChange={(e) => setLine(i, "unit_cents", Math.round(parseFloat(e.target.value) * 100) || 0)} />
+                      </td>
+                      <td className="px-2 py-1.5 text-center">
+                        <input type="checkbox" checked={line.gst_applicable}
+                          onChange={(e) => setLine(i, "gst_applicable", e.target.checked)} />
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-gray-600">
+                        ${(line.qty * line.unit_cents / 100).toFixed(2)}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <button onClick={() => removeLine(i)} className="text-gray-300 hover:text-red-400 text-lg leading-none">×</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="px-3 py-2 border-t border-gray-100">
+                <button onClick={addLine} className="text-xs text-blue-600 hover:underline">+ Add line</button>
+              </div>
             </div>
-          </div>
-          <div className="flex justify-end gap-2 mt-4">
-            <button className="btn-ghost" onClick={() => setShowCreate(false)}>Cancel</button>
-            <button className="btn" onClick={create}>Create invoice</button>
+
+            {/* Totals */}
+            <div className="flex justify-end mb-6">
+              <div className="w-48 space-y-1 text-sm">
+                <div className="flex justify-between text-gray-500">
+                  <span>Subtotal</span><span>${(subtotal / 100).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-gray-500">
+                  <span>GST (10%)</span><span>${(gst / 100).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between font-semibold text-base border-t border-gray-200 pt-1">
+                  <span>Total</span><span>${(total / 100).toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowForm(false)} className="px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50">
+                Cancel
+              </button>
+              <button onClick={submit} disabled={saving}
+                className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm hover:bg-gray-800 disabled:opacity-50">
+                {saving ? "Saving…" : `Create ${formType === "quote" ? "Quote" : "Invoice"}`}
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="card p-0 overflow-hidden">
-        <table className="w-full">
-          <thead><tr>
-            <th className="th">Number</th><th className="th">From</th><th className="th">Issued</th>
-            <th className="th">Due</th><th className="th text-right">Total</th>
-            <th className="th">Status</th><th className="th text-right">Actions</th>
-          </tr></thead>
-          <tbody>
-            {invoices?.map((inv: any) => (
-              <tr key={inv.id} className="hover:bg-panel2/50">
-                <td className="td font-medium">
-                  <Link href={`/invoices/${inv.id}`} className="hover:text-accent">{inv.number}</Link>
-                </td>
-                <td className="td text-muted">{entities?.find((e: any) => e.id === inv.entity_id)?.name}</td>
-                <td className="td">{inv.issue_date}</td>
-                <td className="td">{inv.due_date}</td>
-                <td className="td text-right font-semibold">{money(inv.total_cents)}</td>
-                <td className="td"><span className={`px-2 py-0.5 rounded text-xs ${STATUS[inv.status]}`}>{inv.status}</span></td>
-                <td className="td text-right space-x-3 whitespace-nowrap">
-                  <Link href={`/invoices/${inv.id}`} className="text-accent text-xs">view</Link>
-                  {inv.status === "draft" && <button className="text-accent text-xs" onClick={() => send(inv.id)}>send</button>}
-                  {inv.hosted_url && inv.status !== "paid" && (
-                    <a href={inv.hosted_url} target="_blank" rel="noreferrer" className="text-accent text-xs">pay</a>
-                  )}
-                  {inv.status !== "paid" && <button className="text-good text-xs" onClick={() => markPaid(inv.id)}>mark paid</button>}
-                </td>
-              </tr>
-            ))}
-            {invoices?.length === 0 && <tr><td className="td text-muted" colSpan={7}>No invoices yet — create your first above.</td></tr>}
-          </tbody>
-        </table>
-      </div>
+      {/* Payment modal */}
+      {payModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6">
+            <h2 className="text-lg font-semibold mb-1">Record Payment</h2>
+            <p className="text-sm text-gray-500 mb-4">
+              {payModal.number} · Balance {money(balance(payModal))}
+            </p>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Amount ($)</label>
+            <input type="number" min="0" step="0.01" autoFocus
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-4"
+              placeholder="0.00" value={payAmount}
+              onChange={(e) => setPayAmount(e.target.value)} />
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setPayModal(null)} className="px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50">
+                Cancel
+              </button>
+              <button onClick={recordPayment}
+                className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm hover:bg-gray-800">
+                Record
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

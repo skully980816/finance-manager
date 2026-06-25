@@ -142,6 +142,7 @@ class InvoiceIn(BaseModel):
     deposit_cents: Optional[int] = None
     deposit_pct: Optional[float] = None
     reminder_freq: Optional[str] = None
+    document_type: str = "invoice"
     lines: List[InvoiceLineIn] = []
 
 
@@ -156,10 +157,12 @@ class InvoiceOut(ORM):
     subtotal_cents: int
     gst_cents: int
     total_cents: int
+    amount_paid_cents: int = 0
     deposit_cents: Optional[int] = None
     deposit_pct: Optional[float] = None
     deposit_due_cents: int = 0
     reminder_freq: Optional[str] = None
+    document_type: str = "invoice"
     stripe_invoice_id: Optional[str] = None
     hosted_url: Optional[str] = None
     notes: Optional[str] = None

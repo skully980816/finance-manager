@@ -149,6 +149,8 @@ class Invoice(Base):
     deposit_pct = Column(Float, nullable=True)
     # How often to remind the client while unpaid: none|weekly|fortnightly|monthly
     reminder_freq = Column(String, nullable=True)
+    document_type = Column(String, default="invoice")   # invoice | quote
+    amount_paid_cents = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     client = relationship("Client")
